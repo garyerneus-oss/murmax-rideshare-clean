@@ -33,5 +33,8 @@ jobs:
           protocol: ftps
           port: 21
           local-dir: dist/
-          server-dir: /public_html/
+          server-dir: /public_html/appmurmaxexpress.com/
+          passive: true
+          security: loose
+          timeout: 60s
           dangerous-clean-slate: false
