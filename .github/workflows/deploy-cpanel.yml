@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout the repository
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -28,7 +28,7 @@ jobs:
       - name: Build project
         run: npm run build
 
-      # 5️⃣ Generate status.html with timestamp + SHA
+      # 5️⃣ Generate status.html + timestamp + SHA
       - name: Ensure status.html exists in dist
         run: |
           mkdir -p dist
@@ -69,7 +69,7 @@ jobs:
           short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
           sed -i "s/GITHUB_SHA_HERE/${short_sha}/g" status.html
 
-      # 6️⃣ Create fallback 404.html + robots.txt (optional)
+      # 6️⃣ Ensure robots.txt + 404.html exist
       - name: Ensure robots.txt and 404.html exist in dist
         run: |
           mkdir -p dist
@@ -83,7 +83,7 @@ jobs:
           <h1>404 — Not Found</h1><p><a href="/">Return to Home</a></p>
           HTML
 
-      # 7️⃣ Deploy build to cPanel via FTPS
+      # 7️⃣ Deploy to cPanel via FTPS
       - name: 📤 Deploy over FTPS to cPanel
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
@@ -95,40 +95,132 @@ jobs:
           local-dir: ./dist/
           server-dir: /public_html/appmurmaxexpress.com/
 
-      # 8️⃣ Post-deploy verification
+      # 8️⃣ Network debug
+      - name: 🔎 Network debug (DNS + TLS)
+        run: |
+          echo "Runner public IP:" && curl -s https://ifconfig.me || true
+          echo "--- nslookup ---" && nslookup appmurmaxexpress.com || true
+          echo "--- dig ---" && dig +short appmurmaxexpress.com || true
+          echo "--- curl HEAD ---" && curl -I -L --max-time 20 https://appmurmaxexpress.com/status.html || true
+
+      # 9️⃣ Post-deploy health checks with DNS fallback
       - name: 🌐 Post-deploy health check (status.html)
         run: |
           set -e
-          sleep 5
+          sleep 10
+          ip=$(dig +short appmurmaxexpress.com | tail -n1)
+          echo "Resolved IP: $ip"
           url="https://appmurmaxexpress.com/status.html?cb=$(date +%s)"
-          echo "Checking $url"
-          http_code=$(curl -L --retry 3 --retry-delay 2 --max-time 15 -sS -o /tmp/status.html -w "%{http_code}" "$url")
+          http_code=$(curl -L --retry 5 --retry-delay 3 --max-time 25 \
+                      --resolve appmurmaxexpress.com:443:$ip \
+                      -sS -o /tmp/status.html -w "%{http_code}" "$url")
           echo "HTTP $http_code"
           head -n 1 /tmp/status.html || true
           if [ "$http_code" != "200" ]; then
-            echo "❌ status.html not reachable (HTTP $http_code)"
-            exit 1
+            echo "❌ status.html not reachable (HTTP $http_code)"; exit 1
           fi
           if ! grep -q "MurMax Express" /tmp/status.html; then
-            echo "❌ status.html content check failed (expected text not found)"
-            exit 1
+            echo "❌ status.html content check failed (expected text not found)"; exit 1
           fi
           echo "✅ status.html reachable and content OK"
 
       - name: 🤖 Post-deploy robots.txt check
         run: |
           set -e
+          ip=$(dig +short appmurmaxexpress.com | tail -n1)
           url="https://appmurmaxexpress.com/robots.txt?cb=$(date +%s)"
-          echo "Checking $url"
-          http_code=$(curl -L --retry 3 --retry-delay 2 --max-time 15 -sS -o /tmp/robots.txt -w "%{http_code}" "$url")
+          http_code=$(curl -L --retry 5 --retry-delay 3 --max-time 25 \
+                      --resolve appmurmaxexpress.com:443:$ip \
+                      -sS -o /tmp/robots.txt -w "%{http_code}" "$url")
           echo "HTTP $http_code"
           tail -n +1 /tmp/robots.txt || true
           if [ "$http_code" != "200" ]; then
-            echo "❌ robots.txt not reachable (HTTP $http_code)"
-            exit 1
+            echo "❌ robots.txt not reachable (HTTP $http_code)"; exit 1
           fi
           if ! grep -q "User-agent:" /tmp/robots.txt; then
-            echo "❌ robots.txt content check failed (User-agent not found)"
-            exit 1
+            echo "❌ robots.txt content check failed (User-agent not found)"; exit 1
           fi
           echo "✅ robots.txt reachable and content OK"
+
+      # 🔔 Slack success/failure notifications
+      - name: 🔔 Slack — success
+        if: ${{ success() }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(cat <<'JSON'
+          {
+            "text": "✅ *MurMax Express® Deployed Successfully*",
+            "blocks": [
+              { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Deployment Success*" } },
+              { "type": "section", "fields": [
+                  { "type": "mrkdwn", "text": "*Domain:*\nappmurmaxexpress.com" },
+                  { "type": "mrkdwn", "text": "*Status:*\nLIVE" },
+                  { "type": "mrkdwn", "text": "*Commit:*\n${GITHUB_SHA::7}" },
+                  { "type": "mrkdwn", "text": "*Branch:*\n${GITHUB_REF_NAME}" }
+              ]}
+            ]
+          }
+          JSON
+          )
+          curl -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+
+      - name: 🔔 Slack — failure
+        if: ${{ failure() }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(cat <<'JSON'
+          {
+            "text": "❌ *MurMax Express® Deployment Failed*",
+            "blocks": [
+              { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Deployment Failed*" } },
+              { "type": "section", "fields": [
+                  { "type": "mrkdwn", "text": "*Domain:*\nappmurmaxexpress.com" },
+                  { "type": "mrkdwn", "text": "*Commit:*\n${GITHUB_SHA::7}" },
+                  { "type": "mrkdwn", "text": "*Branch:*\n${GITHUB_REF_NAME}" }
+              ]}
+            ]
+          }
+          JSON
+          )
+          curl -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+
+      # 📧 Email success/failure notifications
+      - name: 📧 Email — success
+        if: ${{ success() }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: ✅ MurMax Express® Deployed — appmurmaxexpress.com
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <h2>MurMax Express® — Deployment Success</h2>
+            <p><b>Domain:</b> appmurmaxexpress.com</p>
+            <p><b>Status:</b> LIVE</p>
+            <p><b>Commit:</b> ${{ github.sha }}</p>
+            <p><b>Branch:</b> ${{ github.ref_name }}</p>
+            <p><a href="https://appmurmaxexpress.com/status.html">View Status Page</a></p>
+
+      - name: 📧 Email — failure
+        if: ${{ failure() }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: ❌ MurMax Express® Deployment Failed — action required
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <h2>MurMax Express® — Deployment Failed</h2>
+            <p><b>Commit:</b> ${{ github.sha }}</p>
+            <p><b>Branch:</b> ${{ github.ref_name }}</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">Open Action Logs</a></p>
