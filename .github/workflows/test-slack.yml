@@ -1,0 +1,39 @@
+name: Test Slack Notification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ping-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔎 Check SLACK_WEBHOOK_URL secret
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "❌ Missing secret: SLACK_WEBHOOK_URL"
+            exit 1
+          else
+            echo "✅ SLACK_WEBHOOK_URL present"
+          fi
+
+      - name: 🔔 Slack — test ping
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(cat <<'JSON'
+          {
+            "text": "✅ *MurMax Express® Slack test succeeded*",
+            "blocks": [
+              { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Slack test*" } },
+              { "type": "section", "fields": [
+                  { "type": "mrkdwn", "text": "*Repo:*\n${{ github.repository }}" },
+                  { "type": "mrkdwn", "text": "*Run:*\n${{ github.run_id }}" },
+                  { "type": "mrkdwn", "text": "*Branch:*\n${{ github.ref_name }}" },
+                  { "type": "mrkdwn", "text": "*Commit:*\n${{ github.sha }}" }
+              ]}
+            ]
+          }
+          JSON
+          )
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+          echo "✅ Slack payload sent"
