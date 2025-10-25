@@ -10,62 +10,125 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup Node.js (for Vite build)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      # 3️⃣ Install dependencies
       - name: Install dependencies
         run: npm ci || npm i
 
+      # 4️⃣ Build the project
       - name: Build project
         run: npm run build
-      - name: Copy status.html into dist
+
+      # 5️⃣ Generate status.html with timestamp + SHA
+      - name: Ensure status.html exists in dist
         run: |
           mkdir -p dist
-          cp status.html dist/status.html
+          cat > dist/status.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>MurMax Express® — Deployment Status</title>
+            <style>
+              body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 2rem; }
+              .card { border: 1px solid #ddd; border-radius: 12px; padding: 1.25rem; max-width: 720px; }
+              .row { display: grid; grid-template-columns: 180px 1fr; gap: .75rem; margin: .5rem 0; }
+              .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+              .ok { padding: .25rem .5rem; border-radius: 8px; background: #e8f5e9; display: inline-block; }
+            </style>
+          </head>
+          <body>
+            <div class="card">
+              <h1>MurMax Express® — Deployment Status</h1>
+              <div class="row"><div>Domain</div><div class="mono">appmurmaxexpress.com</div></div>
+              <div class="row"><div>Build Timestamp</div><div class="mono">AUTO_TIMESTAMP_UTC</div></div>
+              <div class="row"><div>Commit</div><div class="mono">GITHUB_SHA_HERE</div></div>
+              <div class="row"><div>Server Dir</div><div class="mono">/public_html/appmurmaxexpress.com/</div></div>
+              <div class="row"><div>Status</div><div><span class="ok">LIVE</span></div></div>
+              <p>Tip: Injected by GitHub Actions.</p>
+            </div>
+          </body>
+          </html>
+          HTML
 
-      - name: 🧠 Inject commit SHA into status.html
+      - name: Inject timestamp and short commit SHA into status.html
         working-directory: dist
         run: |
+          ts=$(date -u +"%Y-%m-%d %H:%M:%SZ (UTC)")
+          sed -i "s/AUTO_TIMESTAMP_UTC/${ts}/g" status.html
           short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
           sed -i "s/GITHUB_SHA_HERE/${short_sha}/g" status.html
-      - name: 🌐 Post-deploy health check (status.html)
-        run: |
-          sleep 5
-          url="https://appmurmaxexpress.com/status.html?cb=$(date +%s)"
-          echo "Checking $url"
-          http_code=$(curl -sS -o /tmp/status.html -w "%{http_code}" "$url")
-          echo "HTTP $http_code"
-          head -n 1 /tmp/tmp/status.html || true
-          if [ "$http_code" != "200" ]; then
-            echo "❌ status.html not reachable (HTTP $http_code)"
-            exit 1
-          fi
-          echo "✅ status.html reachable"
 
-      - name: 🤖 Post-deploy robots.txt check
+      # 6️⃣ Create fallback 404.html + robots.txt (optional)
+      - name: Ensure robots.txt and 404.html exist in dist
         run: |
-          url="https://appmurmaxexpress.com/robots.txt?cb=$(date +%s)"
-          echo "Checking $url"
-          http_code=$(curl -sS -o /tmp/robots.txt -w "%{http_code}" "$url")
-          echo "HTTP $http_code"
-          tail -n +1 /tmp/robots.txt || true
-          if [ "$http_code" != "200" ]; then
-            echo "❌ robots.txt not reachable (HTTP $http_code)"
-            exit 1
-          fi
-          echo "✅ robots.txt reachable"
+          mkdir -p dist
+          [ -f dist/robots.txt ] || cat > dist/robots.txt <<'TXT'
+          User-agent: *
+          Allow: /
+          Sitemap: https://appmurmaxexpress.com/sitemap.xml
+          TXT
+          [ -f dist/404.html ] || cat > dist/404.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><title>404 — Not Found</title>
+          <h1>404 — Not Found</h1><p><a href="/">Return to Home</a></p>
+          HTML
 
+      # 7️⃣ Deploy build to cPanel via FTPS
       - name: 📤 Deploy over FTPS to cPanel
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
           local-dir: ./dist/
           server-dir: /public_html/appmurmaxexpress.com/
 
+      # 8️⃣ Post-deploy verification
+      - name: 🌐 Post-deploy health check (status.html)
+        run: |
+          set -e
+          sleep 5
+          url="https://appmurmaxexpress.com/status.html?cb=$(date +%s)"
+          echo "Checking $url"
+          http_code=$(curl -L --retry 3 --retry-delay 2 --max-time 15 -sS -o /tmp/status.html -w "%{http_code}" "$url")
+          echo "HTTP $http_code"
+          head -n 1 /tmp/status.html || true
+          if [ "$http_code" != "200" ]; then
+            echo "❌ status.html not reachable (HTTP $http_code)"
+            exit 1
+          fi
+          if ! grep -q "MurMax Express" /tmp/status.html; then
+            echo "❌ status.html content check failed (expected text not found)"
+            exit 1
+          fi
+          echo "✅ status.html reachable and content OK"
+
+      - name: 🤖 Post-deploy robots.txt check
+        run: |
+          set -e
+          url="https://appmurmaxexpress.com/robots.txt?cb=$(date +%s)"
+          echo "Checking $url"
+          http_code=$(curl -L --retry 3 --retry-delay 2 --max-time 15 -sS -o /tmp/robots.txt -w "%{http_code}" "$url")
+          echo "HTTP $http_code"
+          tail -n +1 /tmp/robots.txt || true
+          if [ "$http_code" != "200" ]; then
+            echo "❌ robots.txt not reachable (HTTP $http_code)"
+            exit 1
+          fi
+          if ! grep -q "User-agent:" /tmp/robots.txt; then
+            echo "❌ robots.txt content check failed (User-agent not found)"
+            exit 1
+          fi
+          echo "✅ robots.txt reachable and content OK"
