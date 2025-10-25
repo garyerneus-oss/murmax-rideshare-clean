@@ -1,0 +1,142 @@
+name: Diagnose FTP + Slack + Email
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ✅ Confirm repo checkout
+        uses: actions/checkout@v4
+
+      ####################################################################
+      # SLACK — webhook reachability + response
+      ####################################################################
+      - name: 🔎 Slack — check secret present
+        run: |
+          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+            echo "❌ Missing secret: SLACK_WEBHOOK_URL"; exit 1
+          else
+            echo "✅ SLACK_WEBHOOK_URL present"
+          fi
+
+      - name: 🌐 Slack — DNS check
+        run: nslookup hooks.slack.com || true
+
+      - name: 🔔 Slack — test ping
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          payload=$(cat <<'JSON'
+          { "text": "🔔 *MurMax Express® — Slack diagnostic ping*", "blocks": [
+              { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Slack diagnostic ping*" } },
+              { "type": "section", "fields": [
+                { "type": "mrkdwn", "text": "*Repo:* ${{ github.repository }}" },
+                { "type": "mrkdwn", "text": "*Run:*  ${{ github.run_id }}" },
+                { "type": "mrkdwn", "text": "*Branch:*  ${{ github.ref_name }}" }
+              ]}
+          ] }
+          JSON
+          )
+          code=$(curl -sS -o /tmp/slack.out -w "%{http_code}" -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL")
+          echo "Slack HTTP: $code"
+          echo "--- Slack body ---"; cat /tmp/slack.out || true
+          test "$code" = "200"
+
+      ####################################################################
+      # EMAIL — SMTP connectivity + send
+      ####################################################################
+      - name: 🔎 Email — check SMTP/MAIL secrets
+        run: |
+          missing=false
+          for key in SMTP_SERVER SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_TO MAIL_FROM; do
+            if [ -z "${{ secrets[key] || '' }}" ]; then echo "❌ Missing: $key"; missing=true; else echo "✅ $key present"; fi
+          done
+          if [ "$missing" = true ]; then
+            echo "⚠️ Email test will likely fail due to missing secrets"; exit 1
+          fi
+      - name: 🌐 Email — DNS check (SMTP server)
+        run: nslookup ${{ secrets.SMTP_SERVER }} || true
+
+      - name: 📧 Email — test send (handles 465 vs 587)
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}
+          subject: "📧 MurMax Express® — SMTP diagnostic"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          html_body: |
+            <h3>MurMax Express® — SMTP Diagnostic</h3>
+            <p>Workflow: ${{ github.workflow }} • Run: ${{ github.run_id }}</p>
+            <p>If you received this, SMTP settings are good.</p>
+
+      ####################################################################
+      # FTP — server/dir/path/protocol validation (no file writes)
+      ####################################################################
+      - name: 🔎 FTP — check secrets present
+        run: |
+          for key in FTP_SERVER FTP_USERNAME FTP_PASSWORD; do
+            if [ -z "${{ secrets[key] || '' }}" ]; then echo "❌ Missing: $key"; exit 1; else echo "✅ $key present"; fi
+          done
+
+      - name: 🌐 FTP — DNS check
+        run: nslookup ${{ secrets.FTP_SERVER }} || true
+
+      # Explicit FTPS (TLS on port 21)
+      - name: 📤 FTP — list (FTPS explicit 21)
+        id: ftps_explicit
+        continue-on-error: true
+        env:
+          HOST: ${{ secrets.FTP_SERVER }}
+          USER: ${{ secrets.FTP_USERNAME }}
+          PASS: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          echo "Trying FTPS explicit (port 21) list of /public_html/appmurmaxexpress.com/"
+          curl -sS --disable-epsv --ftp-ssl-reqd --user "$USER:$PASS" \
+            "ftp://$HOST:21/public_html/appmurmaxexpress.com/" --list-only
+
+      # Implicit FTPS (TLS on port 990)
+      - name: 📤 FTP — list (FTPS implicit 990)
+        id: ftps_implicit
+        if: ${{ steps.ftps_explicit.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          HOST: ${{ secrets.FTP_SERVER }}
+          USER: ${{ secrets.FTP_USERNAME }}
+          PASS: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          echo "Trying FTPS implicit (port 990) list of /public_html/appmurmaxexpress.com/"
+          curl -sS --disable-epsv --user "$USER:$PASS" \
+            "ftps://$HOST:990/public_html/appmurmaxexpress.com/" --list-only
+
+      # Plain FTP (diagnostic only)
+      - name: 📤 FTP — list (FTP plain 21)
+        id: ftp_plain
+        if: ${{ steps.ftps_explicit.outcome == 'failure' && steps.ftps_implicit.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          HOST: ${{ secrets.FTP_SERVER }}
+          USER: ${{ secrets.FTP_USERNAME }}
+          PASS: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          echo "Trying plain FTP (port 21) list of /public_html/appmurmaxexpress.com/ (diagnostic)"
+          curl -sS --disable-epsv --user "$USER:$PASS" \
+            "ftp://$HOST:21/public_html/appmurmaxexpress.com/" --list-only
+
+      - name: ✅ FTP — final verdict
+        run: |
+          echo "Explicit FTPS outcome:  ${{ steps.ftps_explicit.outcome }}"
+          echo "Implicit FTPS outcome:  ${{ steps.ftps_implicit.outcome }}"
+          echo "Plain FTP outcome:      ${{ steps.ftp_plain.outcome }}"
+          if [ "${{ steps.ftps_explicit.outcome }}" = "failure" ] && \
+             [ "${{ steps.ftps_implicit.outcome }}" = "failure" ] && \
+             [ "${{ steps.ftp_plain.outcome }}" = "failure" ]; then
+            echo "❌ All FTP list attempts failed. Likely protocol/port, credentials, or path issue."; exit 1
+          else
+            echo "✅ At least one FTP listing method worked."
+          fi
