@@ -14,8 +14,10 @@ jobs:
       # SLACK — webhook reachability + response
       ####################################################################
       - name: 🔎 Slack — check secret present
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          if [ -z "${{ secrets.SLACK_WEBHOOK_URL }}" ]; then
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
             echo "❌ Missing secret: SLACK_WEBHOOK_URL"; exit 1
           else
             echo "✅ SLACK_WEBHOOK_URL present"
@@ -29,14 +31,16 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           payload=$(cat <<'JSON'
-          { "text": "🔔 *MurMax Express® — Slack diagnostic ping*", "blocks": [
+          { "text": "🔔 *MurMax Express® — Slack diagnostic ping*",
+            "blocks": [
               { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Slack diagnostic ping*" } },
               { "type": "section", "fields": [
                 { "type": "mrkdwn", "text": "*Repo:* ${{ github.repository }}" },
                 { "type": "mrkdwn", "text": "*Run:*  ${{ github.run_id }}" },
                 { "type": "mrkdwn", "text": "*Branch:*  ${{ github.ref_name }}" }
               ]}
-          ] }
+            ]
+          }
           JSON
           )
           code=$(curl -sS -o /tmp/slack.out -w "%{http_code}" -X POST -H 'Content-Type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL")
@@ -48,16 +52,27 @@ jobs:
       # EMAIL — SMTP connectivity + send
       ####################################################################
       - name: 🔎 Email — check SMTP/MAIL secrets
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
         run: |
           missing=false
           for key in SMTP_SERVER SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_TO MAIL_FROM; do
-            if [ -z "${{ secrets[key] || '' }}" ]; then echo "❌ Missing: $key"; missing=true; else echo "✅ $key present"; fi
+            val="$(eval echo \$$key)"
+            if [ -z "$val" ]; then echo "❌ Missing: $key"; missing=true; else echo "✅ $key present"; fi
           done
           if [ "$missing" = true ]; then
-            echo "⚠️ Email test will likely fail due to missing secrets"; exit 1
+            echo "❌ One or more required email secrets missing"; exit 1
           fi
+
       - name: 🌐 Email — DNS check (SMTP server)
-        run: nslookup ${{ secrets.SMTP_SERVER }} || true
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+        run: nslookup "$SMTP_SERVER" || true
 
       - name: 📧 Email — test send (handles 465 vs 587)
         uses: dawidd6/action-send-mail@v3
@@ -79,13 +94,20 @@ jobs:
       # FTP — server/dir/path/protocol validation (no file writes)
       ####################################################################
       - name: 🔎 FTP — check secrets present
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
         run: |
           for key in FTP_SERVER FTP_USERNAME FTP_PASSWORD; do
-            if [ -z "${{ secrets[key] || '' }}" ]; then echo "❌ Missing: $key"; exit 1; else echo "✅ $key present"; fi
+            val="$(eval echo \$$key)"
+            if [ -z "$val" ]; then echo "❌ Missing: $key"; exit 1; else echo "✅ $key present"; fi
           done
 
       - name: 🌐 FTP — DNS check
-        run: nslookup ${{ secrets.FTP_SERVER }} || true
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+        run: nslookup "$FTP_SERVER" || true
 
       # Explicit FTPS (TLS on port 21)
       - name: 📤 FTP — list (FTPS explicit 21)
