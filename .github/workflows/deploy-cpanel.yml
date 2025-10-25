@@ -28,7 +28,7 @@ jobs:
       - name: Build project
         run: npm run build
 
-      # 5️⃣ Generate status.html + timestamp + SHA
+      # 5️⃣ Generate status.html + timestamp + SHA (inside dist/)
       - name: Ensure status.html exists in dist
         run: |
           mkdir -p dist
@@ -69,7 +69,7 @@ jobs:
           short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
           sed -i "s/GITHUB_SHA_HERE/${short_sha}/g" status.html
 
-      # 6️⃣ Ensure robots.txt + 404.html exist
+      # 6️⃣ Ensure robots.txt + 404.html exist (fallbacks)
       - name: Ensure robots.txt and 404.html exist in dist
         run: |
           mkdir -p dist
@@ -83,8 +83,21 @@ jobs:
           <h1>404 — Not Found</h1><p><a href="/">Return to Home</a></p>
           HTML
 
-      # 7️⃣ Deploy to cPanel via FTPS
-      - name: 📤 Deploy over FTPS to cPanel
+      # 7️⃣ Set deploy paths (adjust SERVER_DIR if FTP user's home is /public_html)
+      - name: Set server-dir paths
+        id: paths
+        run: |
+          # Default: full absolute path
+          echo "SERVER_DIR=/public_html/appmurmaxexpress.com/" >> $GITHUB_OUTPUT
+          # Alternate: if your FTP user lands in /public_html on login
+          echo "ALT_SERVER_DIR=/appmurmaxexpress.com/" >> $GITHUB_OUTPUT
+
+      # 8️⃣ Multi-strategy deploy with hostname/IP + protocol fallbacks
+
+      # FTPS (explicit TLS, 21) — hostname
+      - name: 📤 Deploy FTPS (21) — hostname
+        id: deploy_ftps_host
+        continue-on-error: true
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
@@ -93,9 +106,130 @@ jobs:
           protocol: ftps
           port: 21
           local-dir: ./dist/
-          server-dir: /public_html/appmurmaxexpress.com/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          retry-times: 3
+          log-level: standard
+          timeout: 120000
 
-      # 8️⃣ Network debug
+      # FTPS (explicit TLS, 21) — IP
+      - name: 📤 Deploy FTPS (21) — IP
+        id: deploy_ftps_ip
+        if: ${{ steps.deploy_ftps_host.outcome == 'failure' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER_IP }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          retry-times: 3
+          log-level: standard
+          timeout: 120000
+
+      # FTPS-implicit (990) — hostname
+      - name: 📤 Deploy FTPS-implicit (990) — hostname
+        id: deploy_ftpsi_host
+        if: ${{ steps.deploy_ftps_host.outcome == 'failure' && steps.deploy_ftps_ip.outcome == 'failure' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps-implicit
+          port: 990
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          retry-times: 3
+          log-level: standard
+          timeout: 120000
+
+      # FTPS-implicit (990) — IP
+      - name: 📤 Deploy FTPS-implicit (990) — IP
+        id: deploy_ftpsi_ip
+        if: ${{ steps.deploy_ftpsi_host.outcome == 'failure' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER_IP }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps-implicit
+          port: 990
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          retry-times: 3
+          log-level: standard
+          timeout: 120000
+
+      # Plain FTP (21) — hostname (diagnostic)
+      - name: 📤 Deploy FTP (21) — hostname (diagnostic)
+        id: deploy_ftp_host
+        if: ${{ steps.deploy_ftpsi_host.outcome == 'failure' && steps.deploy_ftpsi_ip.outcome == 'failure' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftp
+          port: 21
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          log-level: verbose
+          timeout: 120000
+
+      # Plain FTP (21) — IP (diagnostic)
+      - name: 📤 Deploy FTP (21) — IP (diagnostic)
+        id: deploy_ftp_ip
+        if: ${{ steps.deploy_ftp_host.outcome == 'failure' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER_IP }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftp
+          port: 21
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.SERVER_DIR }}
+          log-level: verbose
+          timeout: 120000
+
+      # If all failed, retry with ALT server-dir (jailed to /public_html)
+      - name: 🔁 Retry with ALT server-dir (if jailed to /public_html)
+        id: alt_paths
+        if: ${{ steps.deploy_ftps_host.outcome == 'failure' && steps.deploy_ftps_ip.outcome == 'failure' && steps.deploy_ftpsi_host.outcome == 'failure' && steps.deploy_ftpsi_ip.outcome == 'failure' && steps.deploy_ftp_host.outcome == 'failure' && steps.deploy_ftp_ip.outcome == 'failure' }}
+        run: echo "ALT=true" >> $GITHUB_OUTPUT
+
+      - name: 📤 Deploy FTPS (21) — IP + ALT path
+        if: ${{ steps.alt_paths.outputs.ALT == 'true' }}
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER_IP }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: ./dist/
+          server-dir: ${{ steps.paths.outputs.ALT_SERVER_DIR }}
+          retry-times: 3
+          log-level: standard
+          timeout: 120000
+
+      # Final fail if nothing worked
+      - name: ❌ Fail if no deploy succeeded
+        if: ${{ steps.deploy_ftps_host.outcome == 'failure' && steps.deploy_ftps_ip.outcome == 'failure' && steps.deploy_ftpsi_host.outcome == 'failure' && steps.deploy_ftpsi_ip.outcome == 'failure' && steps.deploy_ftp_host.outcome == 'failure' && steps.deploy_ftp_ip.outcome == 'failure' }}
+        run: |
+          echo "All deploy strategies failed (hostname & IP, FTPS/FTPS-implicit/FTP)."
+          echo "Check credentials, firewall, and correct server-dir (/public_html/appmurmaxexpress.com/ vs /appmurmaxexpress.com/)."
+          exit 1
+
+      # 9️⃣ Network debug (DNS + TLS)
       - name: 🔎 Network debug (DNS + TLS)
         run: |
           echo "Runner public IP:" && curl -s https://ifconfig.me || true
@@ -103,7 +237,7 @@ jobs:
           echo "--- dig ---" && dig +short appmurmaxexpress.com || true
           echo "--- curl HEAD ---" && curl -I -L --max-time 20 https://appmurmaxexpress.com/status.html || true
 
-      # 9️⃣ Post-deploy health checks with DNS fallback
+      # 🔟 Post-deploy health checks (with DNS fallback)
       - name: 🌐 Post-deploy health check (status.html)
         run: |
           set -e
@@ -142,12 +276,13 @@ jobs:
           fi
           echo "✅ robots.txt reachable and content OK"
 
-      # 🔔 Slack success/failure notifications
+      # 1️⃣1️⃣ Slack notifications
       - name: 🔔 Slack — success
         if: ${{ success() }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then echo "No SLACK_WEBHOOK_URL set"; exit 0; fi
           payload=$(cat <<'JSON'
           {
             "text": "✅ *MurMax Express® Deployed Successfully*",
@@ -158,47 +293,46 @@ jobs:
                   { "type": "mrkdwn", "text": "*Status:*\nLIVE" },
                   { "type": "mrkdwn", "text": "*Commit:*\n${GITHUB_SHA::7}" },
                   { "type": "mrkdwn", "text": "*Branch:*\n${GITHUB_REF_NAME}" }
-              ]}
+              ]},
+              { "type": "section", "text": { "type": "mrkdwn", "text": "<https://appmurmaxexpress.com/status.html|View Status Page>" } }
             ]
           }
           JSON
           )
-          curl -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+          resp=$(curl -sS -o /tmp/slack.out -w "%{http_code}" -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL")
+          echo "Slack HTTP: $resp"; echo "Slack body:"; cat /tmp/slack.out || true
 
       - name: 🔔 Slack — failure
         if: ${{ failure() }}
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then exit 0; fi
           payload=$(cat <<'JSON'
           {
             "text": "❌ *MurMax Express® Deployment Failed*",
             "blocks": [
               { "type": "section", "text": { "type": "mrkdwn", "text": "*MurMax Express® — Deployment Failed*" } },
-              { "type": "section", "fields": [
-                  { "type": "mrkdwn", "text": "*Domain:*\nappmurmaxexpress.com" },
-                  { "type": "mrkdwn", "text": "*Commit:*\n${GITHUB_SHA::7}" },
-                  { "type": "mrkdwn", "text": "*Branch:*\n${GITHUB_REF_NAME}" }
-              ]}
+              { "type": "section", "text": { "type": "mrkdwn", "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|Open Action Logs>" } }
             ]
           }
           JSON
           )
-          curl -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL" || true
 
-      # 📧 Email success/failure notifications
-      - name: 📧 Email — success
-        if: ${{ success() }}
+      # 1️⃣2️⃣ Email notifications (auto select SSL/STARTTLS by port)
+      - name: 📧 Email — success (SSL 465)
+        if: ${{ success() && secrets.SMTP_PORT == '465' }}
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
+          secure: true
           subject: ✅ MurMax Express® Deployed — appmurmaxexpress.com
           to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.MAIL_FROM }}
-          secure: true
           html_body: |
             <h2>MurMax Express® — Deployment Success</h2>
             <p><b>Domain:</b> appmurmaxexpress.com</p>
@@ -207,7 +341,27 @@ jobs:
             <p><b>Branch:</b> ${{ github.ref_name }}</p>
             <p><a href="https://appmurmaxexpress.com/status.html">View Status Page</a></p>
 
-      - name: 📧 Email — failure
+      - name: 📧 Email — success (STARTTLS 587)
+        if: ${{ success() && secrets.SMTP_PORT == '587' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          secure: false
+          subject: ✅ MurMax Express® Deployed — appmurmaxexpress.com
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          html_body: |
+            <h2>MurMax Express® — Deployment Success</h2>
+            <p><b>Domain:</b> appmurmaxexpress.com</p>
+            <p><b>Status:</b> LIVE</p>
+            <p><b>Commit:</b> ${{ github.sha }}</p>
+            <p><b>Branch:</b> ${{ github.ref_name }}</p>
+            <p><a href="https://appmurmaxexpress.com/status.html">View Status Page</a></p>
+
+      - name: 📧 Email — failure (any port)
         if: ${{ failure() }}
         uses: dawidd6/action-send-mail@v3
         with:
@@ -215,10 +369,10 @@ jobs:
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}
           subject: ❌ MurMax Express® Deployment Failed — action required
           to: ${{ secrets.MAIL_TO }}
           from: ${{ secrets.MAIL_FROM }}
-          secure: true
           html_body: |
             <h2>MurMax Express® — Deployment Failed</h2>
             <p><b>Commit:</b> ${{ github.sha }}</p>
