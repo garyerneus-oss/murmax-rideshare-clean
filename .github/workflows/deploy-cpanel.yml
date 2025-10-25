@@ -33,6 +33,32 @@ jobs:
         run: |
           short_sha=$(echo "${GITHUB_SHA}" | cut -c1-7)
           sed -i "s/GITHUB_SHA_HERE/${short_sha}/g" status.html
+      - name: 🌐 Post-deploy health check (status.html)
+        run: |
+          sleep 5
+          url="https://appmurmaxexpress.com/status.html?cb=$(date +%s)"
+          echo "Checking $url"
+          http_code=$(curl -sS -o /tmp/status.html -w "%{http_code}" "$url")
+          echo "HTTP $http_code"
+          head -n 1 /tmp/tmp/status.html || true
+          if [ "$http_code" != "200" ]; then
+            echo "❌ status.html not reachable (HTTP $http_code)"
+            exit 1
+          fi
+          echo "✅ status.html reachable"
+
+      - name: 🤖 Post-deploy robots.txt check
+        run: |
+          url="https://appmurmaxexpress.com/robots.txt?cb=$(date +%s)"
+          echo "Checking $url"
+          http_code=$(curl -sS -o /tmp/robots.txt -w "%{http_code}" "$url")
+          echo "HTTP $http_code"
+          tail -n +1 /tmp/robots.txt || true
+          if [ "$http_code" != "200" ]; then
+            echo "❌ robots.txt not reachable (HTTP $http_code)"
+            exit 1
+          fi
+          echo "✅ robots.txt reachable"
 
       - name: 📤 Deploy over FTPS to cPanel
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
