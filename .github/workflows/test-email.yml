@@ -1,0 +1,43 @@
+name: Test Email Notification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🔎 Check SMTP and MAIL secrets
+        run: |
+          missing=false
+          for key in SMTP_SERVER SMTP_PORT SMTP_USERNAME SMTP_PASSWORD MAIL_TO MAIL_FROM; do
+            if [ -z "${{ secrets[key] || '' }}" ]; then
+              echo "❌ Missing secret: $key"
+              missing=true
+            else
+              echo "✅ $key present"
+            fi
+          done
+          if [ "$missing" = true ]; then
+            echo "❌ One or more required email secrets missing"
+            exit 1
+          fi
+
+      - name: 📧 Email — test send
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "✅ MurMax Express® Email Test"
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.MAIL_FROM }}
+          secure: true
+          html_body: |
+            <h2>MurMax Express® — Email Channel Test</h2>
+            <p>This confirms that your CI/CD email notification system is active and functioning.</p>
+            <p><b>Repository:</b> ${{ github.repository }}</p>
+            <p><b>Workflow:</b> Test Email Notification</p>
+            <p><b>Run ID:</b> ${{ github.run_id }}</p>
+            <p><b>Timestamp (UTC):</b> ${{ github.run_started_at }}</p>
